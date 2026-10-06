@@ -16,6 +16,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
       # e2e.ts needs live upstream data and browsers, so CI runs the unit tests only
       - run: bun test
 
