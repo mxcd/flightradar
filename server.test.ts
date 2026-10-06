@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { parseQuery, parseType } from "./server";
+import { globalTypes, matcher } from "./aircraft";
 
 const q = (s: string) => parseQuery(new URL(`http://x/api/aircraft?${s}`));
 
@@ -22,4 +23,16 @@ test("parseType", () => {
   expect(t("t=A3STX")).toBeNull();
   expect(t("t=../x")).toBeNull();
   expect(t("")).toBeNull();
+});
+
+test("matcher", () => {
+  const m = (f: string, a: object) => matcher(f)({ hex: "abc", ...a });
+  expect(m("", {})).toBe(true);
+  expect(m("beluga", { t: "A337" })).toBe(true);
+  expect(m("beluga", { t: "A320" })).toBe(false);
+  expect(m("mil", { dbFlags: 1 })).toBe(true);
+  expect(m("mil", { dbFlags: 8 })).toBe(false);
+  expect(m("dlh a33", { flight: "DLH9C   " })).toBe(true);
+  expect(m("a33", { t: "A333" })).toBe(true);
+  expect(globalTypes("beluga dlh a33 b748")).toEqual(["a3st", "a337", "a33", "b748"]); // a33: partial code, lookup returns nothing; dlh: no digit, no lookup
 });

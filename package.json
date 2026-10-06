@@ -3,5 +3,8 @@
   "private": true,
   "devDependencies": {
     "playwright": "^1"
+  },
+  "dependencies": {
+    "web-push": "^3.6.7"
   }
 }

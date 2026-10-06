@@ -1,0 +1,8 @@
+node_modules
+.git
+.github
+*.db
+*.db-*
+*.test.ts
+e2e.ts
+icon.svg

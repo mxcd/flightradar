@@ -3,7 +3,8 @@ import { chromium } from "playwright";
 import { expect } from "bun:test";
 
 const port = 30000 + Math.floor(Math.random() * 10000);
-const server = Bun.spawn(["bun", "server.ts"], { env: { ...process.env, PORT: String(port) }, stdout: "ignore" });
+const dbPath = `/tmp/flightradar-e2e-${port}.db`;
+const server = Bun.spawn(["bun", "server.ts"], { env: { ...process.env, PORT: String(port), DB_PATH: dbPath }, stdout: "ignore" });
 const url = `http://localhost:${port}`;
 await Bun.sleep(1500);
 const browser = await chromium.launch();
@@ -168,6 +169,56 @@ await page.fill("#coords", "48.70000, 9.10000");
   expect(await page.textContent("#list tr")).toContain("DUKE89");
   await page.fill("#filter", "");
 
+  // PWA: manifest with icons, service worker controls the page
+  const pwa = await browser.newContext({ permissions: ["notifications"] });
+  const w = await pwa.newPage();
+  // headless Chromium has no push service: stand in a subscription shaped like a real FCM one
+  await w.addInitScript(() => {
+    let sub: any = null;
+    PushManager.prototype.getSubscription = async () => sub;
+    PushManager.prototype.subscribe = async () => (sub = {
+      endpoint: "https://fcm.googleapis.com/fcm/send/e2e",
+      toJSON() { return { endpoint: this.endpoint, keys: { p256dh: "BNcRdreALRFXTkOOUHK1EtK2wtaz5Ry4YfYCA", auth: "tBHItJI5svbpez7KI4CCXg" } }; },
+    });
+  });
+  await w.goto(`${url}/?lat=48.78&lon=9.18`);
+  const manifest = await w.evaluate(async () => (await fetch(document.querySelector<HTMLLinkElement>("link[rel=manifest]")!.href)).json());
+  expect(manifest.display).toBe("standalone");
+  for (const icon of manifest.icons) expect((await w.request.get(`${url}${icon.src}`)).ok()).toBe(true);
+  expect(await w.evaluate(async () => (await navigator.serviceWorker.ready).active?.scriptURL)).toEndWith("/sw.js");
+
+  // alerts: add sends the list with the subscription to the server, start re-sends, remove sends the shorter list
+  const puts: any[] = [];
+  await w.route((u) => u.pathname === "/api/alerts", async (route) => {
+    puts.push(route.request().postDataJSON());
+    await route.fulfill({ status: 204 });
+  });
+  await menu(w);
+  await w.fill("#alert-filter", "mil");
+  await w.selectOption("#alert-radius", "10");
+  await w.click("#alert-form button");
+  await w.waitForSelector("#alert-list li");
+  expect(puts.at(-1)).toEqual({
+    subscription: { endpoint: "https://fcm.googleapis.com/fcm/send/e2e", keys: { p256dh: "BNcRdreALRFXTkOOUHK1EtK2wtaz5Ry4YfYCA", auth: "tBHItJI5svbpez7KI4CCXg" } },
+    alerts: [{ filter: "mil", lat: 48.78, lon: 9.18, radius: 10 }],
+  });
+  expect(await w.textContent("#alert-list li")).toContain("mil · 10 nm · 48.78, 9.18");
+  await w.reload();
+  for (let i = 0; i < 50 && puts.length < 2; i++) await Bun.sleep(100);
+  expect(puts.length).toBe(2);
+  await menu(w);
+  await w.click("#alert-list button");
+  await w.waitForFunction(() => document.querySelectorAll("#alert-list li").length === 0);
+  expect(puts.at(-1).alerts).toEqual([]);
+
+  // the real endpoint accepts exactly that body (and drops the device again on an empty list)
+  await w.unroute((u) => u.pathname === "/api/alerts");
+  for (const alerts of [[{ filter: "mil", lat: 48.78, lon: 9.18, radius: 10 }], []]) {
+    const res = await w.request.put(`${url}/api/alerts`, { data: { subscription: puts[0].subscription, alerts } });
+    expect(res.status()).toBe(204);
+  }
+  await pwa.close();
+
   // mobile: compass button, device facing east -> heading 090
   const mobile = await browser.newContext({
     viewport: { width: 400, height: 800 }, isMobile: true, hasTouch: true,
@@ -213,4 +264,5 @@ await page.fill("#coords", "48.70000, 9.10000");
 } finally {
   await browser.close();
   server.kill();
+  for (const suffix of ["", "-wal", "-shm"]) await Bun.file(dbPath + suffix).delete().catch(() => {});
 }
