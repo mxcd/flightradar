@@ -1,0 +1,7 @@
+{
+  "name": "flightradar",
+  "private": true,
+  "devDependencies": {
+    "playwright": "^1"
+  }
+}

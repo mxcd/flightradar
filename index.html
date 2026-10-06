@@ -1,0 +1,579 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Flightradar</title>
+<style>
+  :root { --fg: #4dff88; --dim: #1f6b3a; --bg: #020a05; --alert: #ff4d4d; }
+  * { box-sizing: border-box; }
+  html { touch-action: pan-x pan-y; } /* no pinch or double-tap zoom, scrolling stays */
+  body { margin: 0; height: 100dvh; display: flex; background: var(--bg); color: var(--fg); font: 13px ui-monospace, Menlo, monospace; }
+  main { flex: 1; position: relative; min-width: 0; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
+  #map { pointer-events: none; }
+  #map.osm { opacity: .45; }
+  #map.dark { filter: grayscale(1) invert(1) brightness(.75) contrast(1.3); }
+  #attrib { position: absolute; bottom: 6px; left: 12px; font-size: 11px; opacity: .7; }
+  #attrib a { color: inherit; }
+  #status { position: absolute; top: 12px; left: 12px; right: 56px; font-size: 11px; pointer-events: none; }
+  #menu-btn { position: absolute; top: 8px; right: 8px; width: 36px; height: 36px; font-size: 20px; }
+  /* top/right are set from the button position when it opens */
+  #menu { position: fixed; inset: auto; margin: 0; padding: 8px 12px; line-height: 2.2; background: var(--bg); color: var(--fg); border: 1px solid var(--dim); }
+  #menu select, #menu button, #menu input, #menu-btn { background: var(--bg); color: var(--fg); border: 1px solid var(--dim); font: inherit; cursor: pointer; }
+  #menu button.on { background: var(--dim); }
+  #menu select, #menu button, #menu input { height: 24px; padding: 0 6px; line-height: 1; vertical-align: middle; }
+  #menu button { min-width: 24px; }
+  /* mouse devices have room: the menu stays open in the radar's corner, no ⋮ (author display beats the popover's UA display: none) */
+  @media (hover: hover) and (pointer: fine) {
+    #menu-btn { display: none; }
+    #menu { display: block; position: absolute; inset: 8px 8px auto auto; }
+  }
+  aside { width: min(320px, 40vw); border-left: 1px solid var(--dim); overflow-y: auto; padding: 12px; }
+  h2 { font-size: 13px; margin: 0 0 8px; letter-spacing: .1em; }
+  #filter { width: 100%; margin-bottom: 8px; background: var(--bg); color: var(--fg); border: 1px solid var(--dim); font: inherit; padding: 2px 4px; }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 0 0 16px; }
+  dt { opacity: .6; }
+  dd { margin: 0; }
+  table { width: 100%; border-collapse: collapse; }
+  td { padding: 2px 4px; white-space: nowrap; }
+  td:not(:first-child) { text-align: right; }
+  tr { cursor: pointer; }
+  tr:hover, tr.sel { background: #0c2b17; }
+  .alert { color: var(--alert); }
+  @media (max-width: 800px) and (orientation: portrait) { body { flex-direction: column; } aside { width: auto; height: 40dvh; border-left: 0; border-top: 1px solid var(--dim); } }
+</style>
+</head>
+<body>
+<main>
+  <canvas id="map"></canvas>
+  <canvas id="radar"></canvas>
+  <div id="attrib" hidden>© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors</div>
+  <div id="status">locating…</div>
+  <button id="menu-btn" popovertarget="menu" aria-label="settings">⋮</button>
+  <div id="menu" popover>
+    <div>RANGE <select id="range"><option>10</option><option selected>25</option><option>50</option><option>100</option><option>250</option></select> NM</div>
+    <div>MAP <select id="layer"><option value="">off</option><option value="dark">OSM dark</option><option value="osm">OSM</option></select></div>
+    <div>HDG <span id="hdg">000</span>° <button id="north" title="north up">N↑</button> <button id="lock" title="lock heading: dragging the radar no longer rotates it">LOCK</button> <button id="compass" hidden>COMPASS</button></div>
+    <form id="loc">POS <input id="coords" placeholder="48.78, 9.18" size="18" aria-label="latitude, longitude"> <button>SET</button> <button type="button" id="gps">GPS</button></form>
+    <div>FAV <select id="places" aria-label="saved positions"></select> <button id="save-place" title="save current position">+</button> <button id="del-place" title="remove selected position">−</button></div>
+  </div>
+</main>
+<aside>
+  <h2>SELECTED</h2>
+  <dl id="detail"><dt>-</dt><dd>click a target</dd></dl>
+  <h2>TARGETS <span id="count"></span></h2>
+  <input id="filter" placeholder="filter: beluga, mil, A388, DLH, D-AI…" aria-label="filter targets" title="space-separated, any term matches: callsign, registration, ICAO type code or description (partial ok), mil for military, or beluga / a380 / 747 / dreamliner / concorde. Full type codes (A337, B748) are also looked up worldwide.">
+  <table><tbody id="list"></tbody></table>
+</aside>
+<script>
+// no devtools on a phone: surface uncaught errors where they can be read
+addEventListener("error", (e) => { document.getElementById("status").textContent = `error: ${e.message} (${e.lineno}:${e.colno})`; });
+addEventListener("unhandledrejection", (e) => { document.getElementById("status").textContent = `error: ${e.reason?.message ?? e.reason}`; });
+
+// iOS Safari ignores user-scalable=no for pinch; its non-standard gesture events can still be cancelled
+addEventListener("gesturestart", (e) => e.preventDefault());
+
+const SWEEP_MS = 4000;
+const POLL_MS = 5000;
+const EMERGENCY = { "7500": "HIJACK", "7600": "RADIO FAIL", "7700": "EMERGENCY" };
+
+const canvas = document.getElementById("radar");
+const ctx = canvas.getContext("2d");
+const mapCanvas = document.getElementById("map");
+const mctx = mapCanvas.getContext("2d");
+const $ = (id) => document.getElementById(id);
+
+let home = null;          // { lat, lon }
+let aircraft = [];        // readsb objects around home from the last poll, each tagged with _at (fetch time)
+let remote = [];          // worldwide matches for type codes in the filter, same shape
+let selected = null;      // hex
+let screenPos = [];       // [{ hex, x, y }] for click hit-testing
+let heading = Number(localStorage.heading) || 0; // compass direction at the top of the screen, degrees
+let compass = false;      // heading follows the device compass
+let locked = false;       // dragging does not rotate
+let drag = null;          // { x, y, angle, heading, moved } while a pointer is down
+const pointers = new Map(); // pointerId -> { x, y } for pinch
+let pinch = null;         // { spread, range } while two pointers are down
+const MIN_RANGE = 2, MAX_RANGE = 250;
+let range = Math.min(MAX_RANGE, Math.max(MIN_RANGE, Number(localStorage.range) || 25)); // displayed radius, nm
+const routes = new Map(); // callsign -> Promise<string>
+
+const pad = (n) => String(n).padStart(2, "0");
+const clock = (d) => `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+const callsign = (a) => (a.flight ?? "").trim() || a.r || a.hex.toUpperCase();
+const altText = (a) => a.alt_baro === "ground" ? "GND" : a.alt_baro == null ? "-" : a.alt_baro >= 10000 ? `FL${Math.round(a.alt_baro / 100)}` : `${a.alt_baro} ft`;
+const norm = (deg) => ((deg % 360) + 360) % 360;
+// names people search for -> ICAO type designators
+const ALIASES = {
+  beluga: "A3ST A337",     // A300-600ST Beluga, A330-743L BelugaXL
+  a380: "A388",
+  "747": "B741 B742 B743 B744 B748 B74S",
+  dreamliner: "B788 B789 B78X",
+  concorde: "CONC",
+};
+const filterTerms = (text) => text.toLowerCase().split(/[\s,]+/).filter(Boolean).flatMap((t) => (ALIASES[t] ?? t).toLowerCase().split(" "));
+// terms that look like a full ICAO type designator (A3ST, B748, C172) get a worldwide lookup;
+// a digit is required so airline prefixes like DLH don't trigger one, aliases (CONC) always do
+function globalTypes(text) {
+  const fromAlias = text.toLowerCase().split(/[\s,]+/).flatMap((t) => ALIASES[t]?.toLowerCase().split(" ") ?? []);
+  return [...new Set(filterTerms(text).filter((t) => fromAlias.includes(t) || /^(?=.*\d)[a-z0-9]{3,4}$/.test(t)))];
+}
+// filter text -> predicate: any term is a substring of callsign, registration, type or description;
+// "mil" matches airframes the readsb database flags as military (dbFlags bit 0)
+function matcher(text) {
+  const terms = filterTerms(text);
+  if (!terms.length) return () => true;
+  return (a) => {
+    const hay = [a.flight, a.r, a.t, a.desc].filter(Boolean).join(" ").toLowerCase();
+    return terms.some((t) => t === "mil" ? (a.dbFlags & 1) === 1 : hay.includes(t));
+  };
+}
+let matches = matcher(localStorage.filter ?? "");
+
+const isAlert = (a) => a.squawk in EMERGENCY || (a.emergency && a.emergency !== "none");
+
+// nm offsets east/north of home, dead-reckoned from the last fix using ground speed and track
+function offset(a, now) {
+  // ponytail: flat-earth projection, a few % off beyond ~300 nm; fine for direction and rough distance of far matches
+  let east = norm(a.lon - home.lon + 180) - 180;
+  east *= 60 * Math.cos(home.lat * Math.PI / 180);
+  let north = (a.lat - home.lat) * 60;
+  if (a.gs != null && a.track != null) {
+    const nm = a.gs * ((now - a._at) / 1000 + (a.seen_pos ?? 0)) / 3600;
+    east += nm * Math.sin(a.track * Math.PI / 180);
+    north += nm * Math.cos(a.track * Math.PI / 180);
+  }
+  return { east, north };
+}
+
+function resize() {
+  const dpr = devicePixelRatio || 1;
+  for (const [c, cx] of [[canvas, ctx], [mapCanvas, mctx]]) {
+    c.width = c.clientWidth * dpr;
+    c.height = c.clientHeight * dpr;
+    cx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+}
+
+// OSM raster tiles under the radar. Tile server policy: light use, attribution shown, browser cache does the rest.
+const TILE = 256;
+const tiles = new Map(); // url -> Image, insertion order = age
+function tile(z, x, y) {
+  const url = `https://tile.openstreetmap.org/${z}/${x}/${y}.png`;
+  let img = tiles.get(url);
+  if (!img) {
+    img = new Image();
+    img.src = url;
+    tiles.set(url, img);
+    if (tiles.size > 400) tiles.delete(tiles.keys().next().value);
+  }
+  return img;
+}
+
+// ponytail: Mercator tiles under an equirectangular plot; they agree at the centre and drift a few % toward the rim at 250 nm
+function drawMap(cx, cy, r, scale, rot) {
+  mctx.clearRect(0, 0, mapCanvas.clientWidth, mapCanvas.clientHeight);
+  if (!$("layer").value || !home) return;
+  const lat = home.lat * Math.PI / 180;
+  // zoom where one tile pixel is as many metres as one radar pixel; k scales the rounded zoom to fit exactly
+  const zf = Math.log2(40075016.686 * Math.cos(lat) * scale / (1852 * TILE));
+  const z = Math.max(0, Math.min(19, Math.round(zf)));
+  const k = 2 ** (zf - z);
+  const n = 2 ** z;
+  const wx = (home.lon + 180) / 360 * n * TILE;
+  const wy = (1 - Math.log(Math.tan(lat) + 1 / Math.cos(lat)) / Math.PI) / 2 * n * TILE;
+  const reach = r / k;
+
+  mctx.save();
+  mctx.beginPath(); mctx.arc(cx, cy, r, 0, 2 * Math.PI); mctx.clip();
+  mctx.translate(cx, cy); mctx.rotate(-rot); mctx.scale(k, k);
+  for (let ty = Math.floor((wy - reach) / TILE); ty <= Math.floor((wy + reach) / TILE); ty++) {
+    if (ty < 0 || ty >= n) continue;
+    for (let tx = Math.floor((wx - reach) / TILE); tx <= Math.floor((wx + reach) / TILE); tx++) {
+      const img = tile(z, ((tx % n) + n) % n, ty);
+      // +0.5 overlap hides hairline seams between scaled tiles
+      if (img.complete && img.naturalWidth) mctx.drawImage(img, tx * TILE - wx, ty * TILE - wy, TILE + 0.5, TILE + 0.5);
+    }
+  }
+  mctx.restore();
+}
+new ResizeObserver(resize).observe(canvas); // window resize, rotation and layout flips alike
+
+function draw(now) {
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  const cx = w / 2, cy = h / 2, r = Math.min(w, h) / 2 - 24;
+  const scale = r / range;
+  const sweep = (now % SWEEP_MS) / SWEEP_MS * 2 * Math.PI; // clockwise from screen top
+  const rot = heading * Math.PI / 180;
+  // screen point at a true bearing (radians) and pixel distance from the centre
+  const at = (bearing, d) => [cx + d * Math.sin(bearing - rot), cy - d * Math.cos(bearing - rot)];
+  $("hdg").textContent = String(Math.round(heading) % 360).padStart(3, "0");
+
+  ctx.clearRect(0, 0, w, h);
+  drawMap(cx, cy, r, scale, rot);
+
+  ctx.strokeStyle = "#1f6b3a";
+  ctx.fillStyle = "#1f6b3a";
+  ctx.lineWidth = 1;
+  ctx.font = "11px ui-monospace, Menlo, monospace";
+  for (let i = 1; i <= 4; i++) {
+    ctx.beginPath();
+    ctx.arc(cx, cy, r * i / 4, 0, 2 * Math.PI);
+    ctx.stroke();
+    ctx.fillText(`${+(range * i / 4).toPrecision(2)}`, cx + 4, cy - r * i / 4 + 12);
+  }
+  ctx.beginPath();
+  for (const b of [0, Math.PI / 2]) { ctx.moveTo(...at(b, r)); ctx.lineTo(...at(b + Math.PI, r)); }
+  ctx.stroke();
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  for (const [label, b] of [["N", 0], ["E", Math.PI / 2], ["S", Math.PI], ["W", Math.PI * 1.5]]) {
+    ctx.fillStyle = label === "N" ? "#4dff88" : "#1f6b3a";
+    ctx.fillText(label, ...at(b, r + 12));
+  }
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
+
+  // sweep with fading trail
+  const grad = ctx.createConicGradient(sweep - Math.PI / 2 - 0.6, cx, cy);
+  grad.addColorStop(0, "rgba(77,255,136,0)");
+  grad.addColorStop(0.6 / (2 * Math.PI), "rgba(77,255,136,0.25)");
+  grad.addColorStop(0.6 / (2 * Math.PI) + 0.0001, "rgba(77,255,136,0)");
+  ctx.fillStyle = grad;
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, 2 * Math.PI); ctx.fill();
+
+  screenPos = [];
+  if (home) {
+    for (const a of targets()) {
+      const { east, north } = offset(a, now);
+      const dist = Math.hypot(east, north);
+      const bearing = Math.atan2(east, north);
+      if (dist > range) {
+        if (a._remote) offScale(a, bearing, dist);
+        continue;
+      }
+      const [x, y] = at(bearing, dist * scale);
+      screenPos.push({ hex: a.hex, x, y });
+
+      // blip glows when the sweep passes it on screen, then fades over one revolution
+      const since = ((sweep - (bearing - rot)) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) / (2 * Math.PI);
+      const alpha = 1 - 0.6 * since;
+      const color = isAlert(a) ? `rgba(255,77,77,${alpha})` : `rgba(77,255,136,${alpha})`;
+      ctx.fillStyle = ctx.strokeStyle = color;
+
+      ctx.beginPath(); ctx.arc(x, y, a.hex === selected ? 5 : 3, 0, 2 * Math.PI); ctx.fill();
+      if (a.hex === selected) { ctx.beginPath(); ctx.arc(x, y, 10, 0, 2 * Math.PI); ctx.stroke(); }
+      if (a.gs && a.track != null) { // 1-minute velocity vector
+        const len = a.gs / 60 * scale, trk = a.track * Math.PI / 180 - rot;
+        ctx.beginPath(); ctx.moveTo(x, y);
+        ctx.lineTo(x + len * Math.sin(trk), y - len * Math.cos(trk));
+        ctx.stroke();
+      }
+      ctx.fillText(callsign(a), x + 8, y - 2);
+      ctx.fillText(`${altText(a)} ${a.gs != null ? Math.round(a.gs) : "-"}kt`, x + 8, y + 10);
+    }
+  }
+
+  ctx.fillStyle = "#4dff88";
+  ctx.beginPath(); ctx.arc(cx, cy, 2, 0, 2 * Math.PI); ctx.fill();
+  requestAnimationFrame(draw);
+
+  // a match beyond the range: arrow on the rim pointing at it, with its distance
+  function offScale(a, bearing, dist) {
+    const [x, y] = at(bearing, r - 8);
+    screenPos.push({ hex: a.hex, x, y });
+    ctx.fillStyle = ctx.strokeStyle = "#ffcc4d";
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(bearing - rot);
+    ctx.beginPath(); ctx.moveTo(0, -7); ctx.lineTo(-5, 4); ctx.lineTo(5, 4); ctx.closePath(); ctx.fill();
+    ctx.restore();
+    if (a.hex === selected) { ctx.beginPath(); ctx.arc(x, y, 11, 0, 2 * Math.PI); ctx.stroke(); }
+    const [lx, ly] = at(bearing, r - 30);
+    ctx.textAlign = "center";
+    ctx.fillText(callsign(a), lx, ly - 2);
+    ctx.fillText(`${Math.round(dist)} nm`, lx, ly + 10);
+    ctx.textAlign = "left";
+  }
+}
+
+// local traffic plus worldwide type matches not already local, filtered, with a position
+function targets() {
+  const local = new Set(aircraft.map((a) => a.hex));
+  return [...aircraft, ...remote.filter((a) => !local.has(a.hex))].filter((a) => a.lat != null && matches(a));
+}
+
+function selectAt(e) {
+  const rect = canvas.getBoundingClientRect();
+  const x = e.clientX - rect.left, y = e.clientY - rect.top;
+  const hit = screenPos.reduce((best, p) => {
+    const d = Math.hypot(p.x - x, p.y - y);
+    return d < 15 && (!best || d < best.d) ? { hex: p.hex, d } : best;
+  }, null);
+  select(hit?.hex ?? null);
+}
+
+// drag around the centre to rotate; a press without movement selects
+function angleAt(e) {
+  const rect = canvas.getBoundingClientRect();
+  return Math.atan2(e.clientX - rect.left - rect.width / 2, rect.top + rect.height / 2 - e.clientY) * 180 / Math.PI;
+}
+const spread = () => { const [a, b] = pointers.values(); return Math.hypot(a.x - b.x, a.y - b.y); };
+canvas.addEventListener("pointerdown", (e) => {
+  canvas.setPointerCapture(e.pointerId);
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (pointers.size === 2) {
+    pinch = { spread: spread(), range };
+    drag = null; // second finger: stop rotating, never select
+  } else {
+    drag = { x: e.clientX, y: e.clientY, angle: angleAt(e), heading, moved: false };
+  }
+});
+canvas.addEventListener("pointermove", (e) => {
+  if (pointers.has(e.pointerId)) pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (pinch && pointers.size === 2) return zoomTo(pinch.range * pinch.spread / spread());
+  if (!drag) return;
+  if (Math.hypot(e.clientX - drag.x, e.clientY - drag.y) > 5) drag.moved = true;
+  if (drag.moved && !compass && !locked) heading = norm(drag.heading - (angleAt(e) - drag.angle));
+});
+canvas.addEventListener("pointerup", (e) => {
+  pointers.delete(e.pointerId);
+  pinch = null;
+  if (drag && !drag.moved) selectAt(e);
+  localStorage.heading = heading;
+  drag = null;
+});
+canvas.addEventListener("pointercancel", (e) => { pointers.delete(e.pointerId); pinch = null; drag = null; });
+canvas.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  zoomTo(range * Math.exp(e.deltaY * 0.002));
+}, { passive: false });
+
+// iOS: webkitCompassHeading on deviceorientation. Android: deviceorientationabsolute, alpha counter-clockwise from north.
+function onOrientation(e) {
+  const deg = e.webkitCompassHeading ?? (e.absolute && e.alpha != null ? 360 - e.alpha : null);
+  if (deg == null) return;
+  const target = deg + (screen.orientation?.angle ?? 0);
+  heading = norm(heading + (norm(target - heading + 180) - 180) * 0.2); // low-pass, shortest way round
+}
+
+async function setCompass(on) {
+  if (on && !isSecureContext) { $("status").textContent = "compass needs HTTPS"; return; }
+  if (on && DeviceOrientationEvent.requestPermission) {
+    try {
+      if (await DeviceOrientationEvent.requestPermission() !== "granted") { $("status").textContent = "compass permission denied"; return; }
+    } catch (err) { $("status").textContent = `compass: ${err.message}`; return; }
+  }
+  compass = on;
+  for (const t of ["deviceorientationabsolute", "deviceorientation"]) {
+    on ? addEventListener(t, onOrientation) : removeEventListener(t, onOrientation);
+  }
+  $("compass").classList.toggle("on", on);
+}
+$("compass").hidden = !("DeviceOrientationEvent" in window && matchMedia("(pointer: coarse)").matches);
+$("compass").addEventListener("click", () => setCompass(!compass));
+function setLock(on) {
+  locked = on;
+  localStorage.lock = on ? "1" : "";
+  $("lock").classList.toggle("on", on);
+}
+setLock(localStorage.lock === "1");
+$("lock").addEventListener("click", () => setLock(!locked));
+$("north").addEventListener("click", () => { setCompass(false); heading = 0; localStorage.heading = 0; });
+$("filter").value = localStorage.filter ?? "";
+let typeTimer;
+$("filter").addEventListener("input", (e) => {
+  localStorage.filter = e.target.value;
+  matches = matcher(e.target.value);
+  render();
+  clearTimeout(typeTimer);
+  typeTimer = setTimeout(pollTypes, 600); // don't look up A3, A3S on the way to A3ST
+});
+$("list").addEventListener("click", (e) => select(e.target.closest("tr")?.dataset.hex ?? null));
+
+function select(hex) {
+  selected = hex;
+  render();
+}
+
+// adsbdb sends CORS *, so route lookups go straight from the browser
+function route(cs) {
+  if (!routes.has(cs)) {
+    routes.set(cs, fetch(`https://api.adsbdb.com/v0/callsign/${encodeURIComponent(cs)}`)
+      .then((r) => r.ok ? r.json() : null)
+      .then((j) => {
+        const fr = j?.response?.flightroute;
+        return fr ? `${fr.origin.iata_code || fr.origin.icao_code} → ${fr.destination.iata_code || fr.destination.icao_code} (${fr.airline?.name ?? "?"})` : "unknown";
+      })
+      .catch(() => "unknown"));
+  }
+  return routes.get(cs);
+}
+
+const esc = (s) => String(s ?? "-").replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
+
+function render() {
+  if (!home) return;
+  const now = performance.now();
+  const rows = targets()
+    .map((a) => ({ a, dist: Math.hypot(...Object.values(offset(a, now))) }))
+    .sort((x, y) => x.dist - y.dist);
+
+  $("count").textContent = $("filter").value.trim() ? `(${rows.length}/${aircraft.length + remote.length})` : `(${rows.length})`;
+  $("list").innerHTML = rows.map(({ a, dist }) =>
+    `<tr data-hex="${esc(a.hex)}" class="${a.hex === selected ? "sel" : ""} ${isAlert(a) ? "alert" : ""}">
+      <td>${esc(callsign(a))}</td><td>${esc(a.t)}</td><td>${esc(altText(a))}</td><td>${dist.toFixed(1)} nm</td></tr>`).join("");
+
+  const a = rows.find((x) => x.a.hex === selected)?.a;
+  if (!a) { $("detail").innerHTML = "<dt>-</dt><dd>click a target</dd>"; return; }
+  const cs = (a.flight ?? "").trim();
+  const fields = [
+    ["Callsign", callsign(a)], ["Route", cs ? "…" : "-"], ["Reg", a.r], ["Type", a.desc ?? a.t],
+    ["Hex", a.hex.toUpperCase()], ["Alt", altText(a)], ["V/S", a.baro_rate != null ? `${a.baro_rate} ft/min` : null],
+    ["GS", a.gs != null ? `${Math.round(a.gs)} kt` : null], ["Track", a.track != null ? `${Math.round(a.track)}°` : null],
+    ["Squawk", a.squawk ? `${a.squawk}${EMERGENCY[a.squawk] ? " " + EMERGENCY[a.squawk] : ""}` : null],
+    ["Distance", a.lat != null ? `${Math.hypot(...Object.values(offset(a, now))).toFixed(1)} nm` : null],
+  ];
+  $("detail").innerHTML = fields.map(([k, v]) => `<dt>${k}</dt><dd ${k === "Route" ? 'id="route"' : ""}>${esc(v)}</dd>`).join("");
+  if (cs) route(cs).then((text) => { if (selected === a.hex && $("route")) $("route").textContent = text; });
+}
+
+async function poll() {
+  const at = home;
+  try {
+    const res = await fetch(`/api/aircraft?lat=${at.lat}&lon=${at.lon}&nm=${fetchRange()}`);
+    const body = await res.json();
+    if (at !== home) return; // location changed while this request was in flight
+    if (!res.ok) throw new Error(body.error);
+    if (!res.headers.has("x-stale")) {
+      const now = performance.now();
+      aircraft = (body.ac ?? []).map((a) => ({ ...a, _at: now }));
+    }
+    const stale = res.headers.get("x-stale");
+    $("status").textContent = `${home.lat.toFixed(3)}, ${home.lon.toFixed(3)} · ${clock(new Date())}${stale ? ` · STALE (${stale})` : ""}`;
+    render();
+  } catch (e) {
+    $("status").textContent = `error: ${e.message}`;
+  }
+}
+
+async function pollTypes() {
+  const types = globalTypes($("filter").value);
+  const results = await Promise.all(types.map(async (t) => {
+    try {
+      const res = await fetch(`/api/type?t=${encodeURIComponent(t.toUpperCase())}`);
+      if (!res.ok) return [];
+      const now = performance.now();
+      return ((await res.json()).ac ?? []).map((a) => ({ ...a, _at: now, _remote: true }));
+    } catch {
+      return [];
+    }
+  }));
+  remote = results.flat();
+  render();
+}
+setInterval(pollTypes, 30_000);
+pollTypes();
+
+function setHome(lat, lon) {
+  home = { lat, lon };
+  aircraft = [];
+  $("coords").value = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+  const i = places().findIndex((p) => p.lat === lat && p.lon === lon);
+  $("places").value = i < 0 ? "" : String(i);
+  poll();
+}
+
+// saved positions: [{ name, lat, lon }] in localStorage
+const places = () => JSON.parse(localStorage.places ?? "[]");
+function renderPlaces() {
+  $("places").innerHTML = `<option value="">-</option>` + places().map((p, i) => `<option value="${i}">${esc(p.name)}</option>`).join("");
+}
+$("places").addEventListener("change", (e) => {
+  const p = places()[e.target.value];
+  if (!p) return;
+  localStorage.home = JSON.stringify({ lat: p.lat, lon: p.lon });
+  setHome(p.lat, p.lon);
+});
+$("save-place").addEventListener("click", () => {
+  if (!home) return;
+  const name = prompt("Name for this position", `${home.lat.toFixed(3)}, ${home.lon.toFixed(3)}`)?.trim();
+  if (!name) return;
+  localStorage.places = JSON.stringify([...places().filter((p) => p.name !== name), { name, lat: home.lat, lon: home.lon }]);
+  renderPlaces();
+  $("places").value = String(places().length - 1);
+});
+$("del-place").addEventListener("click", () => {
+  if ($("places").value === "") return;
+  localStorage.places = JSON.stringify(places().filter((_, i) => i !== Number($("places").value)));
+  renderPlaces();
+});
+renderPlaces();
+setInterval(() => home && poll(), POLL_MS);
+// the presets double as fetch radii: zooming fetches the next preset at or above the displayed range,
+// so upstream sees a handful of distinct requests instead of one per zoom step
+const fetchRange = () => [...$("range").options].map((o) => Number(o.value)).find((v) => v >= range) ?? MAX_RANGE;
+function zoomTo(nm) {
+  const before = fetchRange();
+  range = Math.min(MAX_RANGE, Math.max(MIN_RANGE, nm));
+  localStorage.range = range;
+  $("range").value = String(fetchRange());
+  if (home && fetchRange() !== before) poll();
+}
+$("range").value = String(fetchRange());
+function setLayer(value) {
+  $("layer").value = value;
+  localStorage.layer = value;
+  mapCanvas.className = value;
+  $("attrib").hidden = !value;
+}
+setLayer([...$("layer").options].some((o) => o.value === localStorage.layer) ? localStorage.layer : "dark");
+$("layer").addEventListener("change", (e) => setLayer(e.target.value));
+$("menu").addEventListener("beforetoggle", (e) => {
+  if (e.newState !== "open") return;
+  const b = $("menu-btn").getBoundingClientRect();
+  $("menu").style.top = `${b.bottom + 4}px`;
+  $("menu").style.right = `${innerWidth - b.right}px`;
+});
+$("range").addEventListener("change", (e) => zoomTo(Number(e.target.value)));
+
+// "lat, lon" as copied from Google Maps; comma and/or whitespace separated
+function parseCoords(text) {
+  const [lat, lon, extra] = text.trim().split(/[\s,;]+/).filter(Boolean).map(Number);
+  return extra === undefined && Math.abs(lat) <= 90 && Math.abs(lon) <= 180 ? { lat, lon } : null;
+}
+
+$("loc").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const c = parseCoords($("coords").value);
+  if (!c) { $("status").textContent = "coords: expected \"lat, lon\""; return; }
+  localStorage.home = JSON.stringify(c);
+  setHome(c.lat, c.lon);
+});
+
+function locate() {
+  $("status").textContent = "locating…";
+  navigator.geolocation.getCurrentPosition(
+    (p) => setHome(p.coords.latitude, p.coords.longitude),
+    (err) => {
+      $("status").textContent = `no GPS (${err.message}), enter coords`;
+      if (!home) setHome(48.78, 9.18);
+    },
+    { timeout: 10000 },
+  );
+}
+$("gps").addEventListener("click", () => { localStorage.removeItem("home"); locate(); });
+
+// priority: ?lat=..&lon=.. in the URL, then coords entered earlier, then GPS, then Stuttgart
+const params = new URLSearchParams(location.search);
+const saved = localStorage.home && JSON.parse(localStorage.home);
+if (params.has("lat") && params.has("lon")) setHome(Number(params.get("lat")), Number(params.get("lon")));
+else if (saved) setHome(saved.lat, saved.lon);
+else locate();
+
+resize();
+requestAnimationFrame(draw);
+</script>
+</body>
+</html>
