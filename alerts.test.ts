@@ -6,7 +6,9 @@ const subscription = { endpoint: "https://fcm.googleapis.com/fcm/send/abc", keys
 const home = { filter: "mil", lat: 48.78, lon: 9.18, radius: 10 };
 
 test("parseDevice", () => {
-  expect(parseDevice({ subscription, alerts: [home] })).toEqual({ subscription, alerts: [home] });
+  expect(parseDevice({ subscription, alerts: [home] })).toEqual({ subscription, alerts: [home], units: "imperial" });
+  expect(parseDevice({ subscription, alerts: [home], units: "metric" })).toMatchObject({ units: "metric" });
+  expect(parseDevice({ subscription, alerts: [home], units: "furlongs" })).toMatchObject({ units: "imperial" });
   expect(parseDevice({ subscription, alerts: [{ ...home, filter: "  beluga " }] })).toMatchObject({ alerts: [{ filter: "beluga" }] });
   // only browser push services: anything else would make the server an HTTP relay
   expect(parseDevice({ subscription: { ...subscription, endpoint: "https://evil.example/x" }, alerts: [] })).toBeString();
@@ -23,10 +25,11 @@ test("parseDevice", () => {
 test("alert fires once when a match enters, not for targets already inside, again after it was gone", async () => {
   let traffic: Aircraft[] = [];
   const sent: string[] = [];
+  const titles: string[] = [];
   const alerts = createAlerts({
     dbPath: ":memory:",
     fetchArea: async () => traffic,
-    send: async (_sub, payload) => { sent.push(JSON.parse(payload).hex); },
+    send: async (_sub, payload) => { sent.push(JSON.parse(payload).hex); titles.push(JSON.parse(payload).title); },
   });
   const put = (body: object) => alerts.put(new Request("http://x/api/alerts", { method: "PUT", body: JSON.stringify(body) }));
   expect((await put({ subscription, alerts: [home] })).status).toBe(204);
@@ -43,6 +46,7 @@ test("alert fires once when a match enters, not for targets already inside, agai
   traffic = [duke, far, civil, newcomer];
   await alerts.check();
   expect(sent).toEqual(["ae0003"]); // only the military target that entered
+  expect(titles).toEqual(["TOPCAT1 within 10 nm"]);
 
   await alerts.check();
   expect(sent).toEqual(["ae0003"]); // still inside: no repeat
@@ -64,4 +68,28 @@ test("expired subscription is removed", async () => {
   await alerts.check(); // enters -> 410 -> device removed
   await alerts.check(); // nothing left to check
   expect(calls).toBe(2);
+});
+
+test("notifications use the device's units; databases from before units get imperial", async () => {
+  const { Database } = await import("bun:sqlite");
+  const path = `/tmp/flightradar-units-${process.pid}.db`;
+  const old = new Database(path);
+  old.run("CREATE TABLE devices (endpoint TEXT PRIMARY KEY, subscription TEXT NOT NULL, alerts TEXT NOT NULL, updated_at INTEGER NOT NULL)");
+  old.run("INSERT INTO devices VALUES (?, ?, ?, 0)", [subscription.endpoint, JSON.stringify(subscription), JSON.stringify([home])]);
+  old.close();
+
+  let traffic: Aircraft[] = [];
+  const bodies: string[] = [];
+  const alerts = createAlerts({ dbPath: path, fetchArea: async () => traffic, send: async (_s, p) => { bodies.push(JSON.parse(p).title + " | " + JSON.parse(p).body); } });
+  await alerts.check();
+  traffic = [{ hex: "ae0009", flight: "DUKE1", t: "BE20", lat: 48.8, lon: 9.2, dbFlags: 1, alt_baro: 3500 }];
+  await alerts.check();
+  expect(bodies.at(-1)).toStartWith("DUKE1 within 10 nm | mil · BE20 · 3500 ft · 1.4 nm NE");
+
+  await alerts.put(new Request("http://x", { method: "PUT", body: JSON.stringify({ subscription, alerts: [{ ...home, radius: 10 / 1.852 }], units: "metric" }) }));
+  await alerts.check(); // changed rule: first look again
+  traffic = [{ hex: "ae0010", flight: "DUKE2", t: "BE20", lat: 48.8, lon: 9.2, dbFlags: 1, alt_baro: 3500 }];
+  await alerts.check();
+  expect(bodies.at(-1)).toStartWith("DUKE2 within 10 km | mil · BE20 · 1.07 km · 2.7 km NE");
+  for (const suffix of ["", "-wal", "-shm"]) await Bun.file(path + suffix).delete().catch(() => {});
 });

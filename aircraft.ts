@@ -48,8 +48,32 @@ export function matcher(text: string): (a: Aircraft) => boolean {
 
 export const callsign = (a: Aircraft) => (a.flight ?? "").trim() || a.r || a.hex.toUpperCase();
 
-export const altText = (a: Aircraft) =>
-  a.alt_baro === "ground" ? "GND" : a.alt_baro == null ? "-" : a.alt_baro >= 10000 ? `FL${Math.round(a.alt_baro / 100)}` : `${a.alt_baro} ft`;
+// Data comes in aviation units (nm, kt, ft, ft/min); "metric" only changes how it is shown.
+export type Units = "imperial" | "metric";
+export const KM_PER_NM = 1.852;
+const M_PER_FT = 0.3048;
+
+export const toUnit = (nm: number, units: Units) => (units === "metric" ? nm * KM_PER_NM : nm);
+
+export const distText = (nm: number, units: Units, digits = 1) =>
+  `${toUnit(nm, units).toFixed(digits)} ${units === "metric" ? "km" : "nm"}`;
+
+export const speedText = (kt: number | undefined, units: Units) =>
+  kt == null ? "-" : units === "metric" ? `${Math.round(kt * KM_PER_NM)} km/h` : `${Math.round(kt)} kt`;
+
+export const climbText = (fpm: number | undefined, units: Units) =>
+  fpm == null ? "-" : units === "metric" ? `${((fpm * M_PER_FT) / 60).toFixed(1)} m/s` : `${fpm} ft/min`;
+
+// imperial: FL above 10,000 ft; metric: m, or km with two decimals above 999 m
+export function altText(a: Aircraft, units: Units = "imperial") {
+  if (a.alt_baro === "ground") return "GND";
+  if (a.alt_baro == null) return "-";
+  if (units === "metric") {
+    const m = a.alt_baro * M_PER_FT;
+    return Math.round(m) > 999 ? `${(m / 1000).toFixed(2)} km` : `${Math.round(m)} m`;
+  }
+  return a.alt_baro >= 10000 ? `FL${Math.round(a.alt_baro / 100)}` : `${a.alt_baro} ft`;
+}
 
 // distance (nm) and bearing (degrees true) from a point to an aircraft
 // ponytail: flat-earth projection, a few % off beyond ~300 nm

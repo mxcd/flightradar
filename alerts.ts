@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import webpush from "web-push";
-import { type Aircraft, altText, callsign, matcher, relative } from "./aircraft";
+import { type Aircraft, type Units, altText, callsign, distText, matcher, relative } from "./aircraft";
 import { POINT_CACHE_MS, pointKey, pointUrls, upstream } from "./upstream";
 
 // Alerts: "a target matching <filter> comes within <radius> nm of <point>", delivered as Web Push so they
@@ -36,7 +36,7 @@ const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFin
 const isKey = (v: unknown) => typeof v === "string" && /^[A-Za-z0-9_-]{8,200}={0,2}$/.test(v);
 
 // PUT /api/alerts body -> device, or the reason it was rejected
-export function parseDevice(body: any): { subscription: Subscription; alerts: Alert[] } | string {
+export function parseDevice(body: any): { subscription: Subscription; alerts: Alert[]; units: Units } | string {
   const sub = body?.subscription;
   let host = "";
   try {
@@ -56,7 +56,8 @@ export function parseDevice(body: any): { subscription: Subscription; alerts: Al
     }
     alerts.push({ filter: a.filter.trim(), lat: a.lat, lon: a.lon, radius: a.radius });
   }
-  return { subscription: { endpoint: sub.endpoint, keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth } }, alerts };
+  const units: Units = body.units === "metric" ? "metric" : "imperial";
+  return { subscription: { endpoint: sub.endpoint, keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth } }, alerts, units };
 }
 
 export function createAlerts(options: AlertsOptions) {
@@ -65,6 +66,10 @@ export function createAlerts(options: AlertsOptions) {
   db.run("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
   db.run(`CREATE TABLE IF NOT EXISTS devices (
     endpoint TEXT PRIMARY KEY, subscription TEXT NOT NULL, alerts TEXT NOT NULL, updated_at INTEGER NOT NULL)`);
+  // added in v0.3.0; databases from before get the column with the old behaviour as default
+  if (!db.query("SELECT 1 FROM pragma_table_info('devices') WHERE name = 'units'").get()) {
+    db.run("ALTER TABLE devices ADD COLUMN units TEXT NOT NULL DEFAULT 'imperial'");
+  }
 
   // VAPID keys are generated once and stored next to the subscriptions they sign for: lose one, lose both
   let row = db.query<{ value: string }, []>("SELECT value FROM meta WHERE key = 'vapid'").get();
@@ -104,18 +109,19 @@ export function createAlerts(options: AlertsOptions) {
     if (!known && count >= MAX_DEVICES) return Response.json({ error: "alert capacity reached" }, { status: 503 });
 
     db.run(
-      `INSERT INTO devices (endpoint, subscription, alerts, updated_at) VALUES (?, ?, ?, ?)
-       ON CONFLICT(endpoint) DO UPDATE SET subscription = excluded.subscription, alerts = excluded.alerts, updated_at = excluded.updated_at`,
-      [endpoint, JSON.stringify(device.subscription), JSON.stringify(device.alerts), Date.now()],
+      `INSERT INTO devices (endpoint, subscription, alerts, units, updated_at) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(endpoint) DO UPDATE SET
+         subscription = excluded.subscription, alerts = excluded.alerts, units = excluded.units, updated_at = excluded.updated_at`,
+      [endpoint, JSON.stringify(device.subscription), JSON.stringify(device.alerts), device.units, Date.now()],
     );
     return new Response(null, { status: 204 });
   }
 
   // false when the push service says the subscription is gone, which also removes the device
-  async function notify(subscription: Subscription, alert: Alert, a: Aircraft, dist: number, bearing: number) {
+  async function notify(subscription: Subscription, units: Units, alert: Alert, a: Aircraft, dist: number, bearing: number) {
     const payload = JSON.stringify({
-      title: `${callsign(a)} within ${alert.radius} nm`,
-      body: `${alert.filter || "any"} · ${a.desc ?? a.t ?? "?"} · ${altText(a)} · ${dist.toFixed(1)} nm ${DIRECTIONS[Math.round(bearing / 45) % 8]}`,
+      title: `${callsign(a)} within ${distText(alert.radius, units, 0)}`,
+      body: `${alert.filter || "any"} · ${a.desc ?? a.t ?? "?"} · ${altText(a, units)} · ${distText(dist, units)} ${DIRECTIONS[Math.round(bearing / 45) % 8]}`,
       hex: a.hex,
     });
     try {
@@ -135,7 +141,7 @@ export function createAlerts(options: AlertsOptions) {
   const inside = new Map<string, Map<string, number>>();
 
   async function check() {
-    const devices = db.query<{ subscription: string; alerts: string }, []>("SELECT subscription, alerts FROM devices").all();
+    const devices = db.query<{ subscription: string; alerts: string; units: Units }, []>("SELECT subscription, alerts, units FROM devices").all();
     const areas = new Map<string, Promise<Aircraft[] | null>>();
     // fetch centre snaps to the page's ~1 km grid, so the radius grows by 1 nm to still cover the alert circle
     const area = (alert: Alert) => {
@@ -168,7 +174,7 @@ export function createAlerts(options: AlertsOptions) {
           const { dist, bearing } = relative(alert, { lat: a.lat, lon: a.lon });
           if (dist > alert.radius) continue;
           // the first check of an alert (new, or after a restart) only learns who is already inside
-          if (seen && !state.has(a.hex) && reachable) reachable = await notify(subscription, alert, a, dist, bearing);
+          if (seen && !state.has(a.hex) && reachable) reachable = await notify(subscription, device.units, alert, a, dist, bearing);
           state.set(a.hex, now);
         }
         for (const [hex, at] of state) if (now - at > FORGET_MS) state.delete(hex);

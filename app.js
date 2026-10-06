@@ -1,4 +1,4 @@
-import { altText, callsign, globalTypes, matcher } from "./aircraft.ts";
+import { KM_PER_NM, altText, callsign, climbText, distText, globalTypes, matcher, speedText, toUnit } from "./aircraft.ts";
 
 // no devtools on a phone: surface uncaught errors where they can be read
 addEventListener("error", (e) => { document.getElementById("status").textContent = `error: ${e.message} (${e.lineno}:${e.colno})`; });
@@ -24,6 +24,7 @@ let selected = null;      // hex
 let screenPos = [];       // [{ hex, x, y }] for click hit-testing
 let heading = Number(localStorage.heading) || 0; // compass direction at the top of the screen, degrees
 let compass = false;      // heading follows the device compass
+let units = "imperial";   // display only, see setUnits
 let locked = false;       // dragging does not rotate
 let drag = null;          // { x, y, angle, heading, moved } while a pointer is down
 const pointers = new Map(); // pointerId -> { x, y } for pinch
@@ -127,7 +128,7 @@ function draw(now) {
     ctx.beginPath();
     ctx.arc(cx, cy, r * i / 4, 0, 2 * Math.PI);
     ctx.stroke();
-    ctx.fillText(`${+(range * i / 4).toPrecision(2)}`, cx + 4, cy - r * i / 4 + 12);
+    ctx.fillText(`${+toUnit(range * i / 4, units).toPrecision(2)}`, cx + 4, cy - r * i / 4 + 12);
   }
   ctx.beginPath();
   for (const b of [0, Math.PI / 2]) { ctx.moveTo(...at(b, r)); ctx.lineTo(...at(b + Math.PI, r)); }
@@ -177,7 +178,7 @@ function draw(now) {
         ctx.stroke();
       }
       ctx.fillText(callsign(a), x + 8, y - 2);
-      ctx.fillText(`${altText(a)} ${a.gs != null ? Math.round(a.gs) : "-"}kt`, x + 8, y + 10);
+      ctx.fillText(`${altText(a, units)} ${speedText(a.gs, units)}`, x + 8, y + 10);
     }
   }
 
@@ -199,7 +200,7 @@ function draw(now) {
     const [lx, ly] = at(bearing, r - 30);
     ctx.textAlign = "center";
     ctx.fillText(callsign(a), lx, ly - 2);
-    ctx.fillText(`${Math.round(dist)} nm`, lx, ly + 10);
+    ctx.fillText(distText(dist, units, 0), lx, ly + 10);
     ctx.textAlign = "left";
   }
 }
@@ -329,17 +330,17 @@ function render() {
   $("count").textContent = $("filter").value.trim() ? `(${rows.length}/${aircraft.length + remote.length})` : `(${rows.length})`;
   $("list").innerHTML = rows.map(({ a, dist }) =>
     `<tr data-hex="${esc(a.hex)}" class="${a.hex === selected ? "sel" : ""} ${isEmergency(a) ? "alert" : ""}">
-      <td>${esc(callsign(a))}</td><td>${esc(a.t)}</td><td>${esc(altText(a))}</td><td>${dist.toFixed(1)} nm</td></tr>`).join("");
+      <td>${esc(callsign(a))}</td><td>${esc(a.t)}</td><td>${esc(altText(a, units))}</td><td>${distText(dist, units)}</td></tr>`).join("");
 
   const a = rows.find((x) => x.a.hex === selected)?.a;
   if (!a) { $("detail").innerHTML = "<dt>-</dt><dd>click a target</dd>"; return; }
   const cs = (a.flight ?? "").trim();
   const fields = [
     ["Callsign", callsign(a)], ["Route", cs ? "…" : "-"], ["Reg", a.r], ["Type", a.desc ?? a.t],
-    ["Hex", a.hex.toUpperCase()], ["Alt", altText(a)], ["V/S", a.baro_rate != null ? `${a.baro_rate} ft/min` : null],
-    ["GS", a.gs != null ? `${Math.round(a.gs)} kt` : null], ["Track", a.track != null ? `${Math.round(a.track)}°` : null],
+    ["Hex", a.hex.toUpperCase()], ["Alt", altText(a, units)], ["V/S", climbText(a.baro_rate, units)],
+    ["GS", speedText(a.gs, units)], ["Track", a.track != null ? `${Math.round(a.track)}°` : null],
     ["Squawk", a.squawk ? `${a.squawk}${EMERGENCY[a.squawk] ? " " + EMERGENCY[a.squawk] : ""}` : null],
-    ["Distance", a.lat != null ? `${Math.hypot(...Object.values(offset(a, now))).toFixed(1)} nm` : null],
+    ["Distance", a.lat != null ? distText(Math.hypot(...Object.values(offset(a, now))), units) : null],
   ];
   $("detail").innerHTML = fields.map(([k, v]) => `<dt>${k}</dt><dd ${k === "Route" ? 'id="route"' : ""}>${esc(v)}</dd>`).join("");
   if (cs) route(cs).then((text) => { if (selected === a.hex && $("route")) $("route").textContent = text; });
@@ -348,7 +349,7 @@ function render() {
 async function poll() {
   const at = home;
   try {
-    const res = await fetch(`/api/aircraft?lat=${at.lat}&lon=${at.lon}&nm=${fetchRange()}`);
+    const res = await fetch(`/api/aircraft?lat=${at.lat}&lon=${at.lon}&nm=${Math.ceil(fetchRange())}`);
     const body = await res.json();
     if (at !== home) return; // location changed while this request was in flight
     if (!res.ok) throw new Error(body.error);
@@ -419,7 +420,10 @@ renderPlaces();
 setInterval(() => home && poll(), POLL_MS);
 // the presets double as fetch radii: zooming fetches the next preset at or above the displayed range,
 // so upstream sees a handful of distinct requests instead of one per zoom step
-const fetchRange = () => [...$("range").options].map((o) => Number(o.value)).find((v) => v >= range) ?? MAX_RANGE;
+const fetchRange = () => {
+  const presets = [...$("range").options].map((o) => Number(o.value));
+  return presets.find((v) => v >= range) ?? presets.at(-1);
+};
 function zoomTo(nm) {
   const before = fetchRange();
   range = Math.min(MAX_RANGE, Math.max(MIN_RANGE, nm));
@@ -427,7 +431,27 @@ function zoomTo(nm) {
   $("range").value = String(fetchRange());
   if (home && fetchRange() !== before) poll();
 }
-$("range").value = String(fetchRange());
+
+// preset lists in each system's own round numbers; option values are nm, which all logic and storage use
+const RANGE_PRESETS = { imperial: [10, 25, 50, 100, 250], metric: [10, 25, 50, 100, 250, 450] };
+const RADIUS_PRESETS = { imperial: [5, 10, 25, 50, 100], metric: [5, 10, 25, 50, 100, 200] };
+function setUnits(value) {
+  units = value;
+  localStorage.units = value;
+  $("units").classList.toggle("on", value === "metric");
+  const toNm = (d) => (value === "metric" ? d / KM_PER_NM : d);
+  for (const el of document.querySelectorAll(".dist-unit")) el.textContent = value === "metric" ? "KM" : "NM";
+  $("range").innerHTML = RANGE_PRESETS[value].map((d) => `<option value="${toNm(d)}">${d}</option>`).join("");
+  $("range").value = String(fetchRange());
+  $("alert-radius").innerHTML = RADIUS_PRESETS[value].map((d) => `<option value="${toNm(d)}" ${d === 10 ? "selected" : ""}>${d}</option>`).join("");
+  renderAlerts();
+  render();
+}
+$("units").addEventListener("click", () => {
+  setUnits(units === "metric" ? "imperial" : "metric");
+  resyncAlerts(); // notifications are worded by the server, in the device's units
+});
+
 function setLayer(value) {
   $("layer").value = value;
   localStorage.layer = value;
@@ -476,7 +500,7 @@ const savedAlerts = () => JSON.parse(localStorage.alerts ?? "[]");
 function renderAlerts() {
   $("alert-list").innerHTML = savedAlerts().map((a, i) => {
     const where = places().find((p) => p.lat === a.lat && p.lon === a.lon)?.name ?? `${a.lat.toFixed(2)}, ${a.lon.toFixed(2)}`;
-    return `<li>${esc(a.filter || "any")} · ${a.radius} nm · ${esc(where)} <button data-i="${i}" title="remove alert">✕</button></li>`;
+    return `<li>${esc(a.filter || "any")} · ${distText(a.radius, units, 0)} · ${esc(where)} <button data-i="${i}" title="remove alert">✕</button></li>`;
   }).join("");
 }
 
@@ -497,7 +521,7 @@ async function syncAlerts(alerts) {
   const res = await fetch("/api/alerts", {
     method: "PUT",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ subscription: sub, alerts }),
+    body: JSON.stringify({ subscription: sub, alerts, units }),
   });
   if (!res.ok) throw new Error((await res.json()).error);
 }
@@ -538,15 +562,17 @@ $("alert-list").addEventListener("click", async (e) => {
 navigator.serviceWorker?.register("/sw.js");
 // a tapped notification selects its aircraft (sw.js posts it to an open window, or opens /?select=)
 navigator.serviceWorker?.addEventListener("message", (e) => { if (e.data?.select) select(e.data.select); });
-renderAlerts();
-// re-send on every start: the server copy heals after a lost database, and the subscription may have rotated
-// (only once push is allowed: subscribing without a tap would prompt or fail)
-if (savedAlerts().length) {
+// only once push is allowed: subscribing without a tap would prompt or fail
+function resyncAlerts() {
+  if (!savedAlerts().length) return;
   navigator.serviceWorker?.ready
     .then((reg) => reg.pushManager?.permissionState?.({ userVisibleOnly: true }) ?? window.Notification?.permission)
     .then((state) => state === "granted" && syncAlerts(savedAlerts()))
     .catch((err) => { $("alert-msg").textContent = `alerts not synced: ${err.message}`; });
 }
+setUnits(localStorage.units === "metric" ? "metric" : "imperial");
+// re-send on every start: the server copy heals after a lost database, and the subscription may have rotated
+resyncAlerts();
 
 // priority: ?lat=..&lon=.. in the URL, then coords entered earlier, then GPS, then Stuttgart
 const params = new URLSearchParams(location.search);

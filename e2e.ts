@@ -125,6 +125,21 @@ await page.fill("#coords", "48.70000, 9.10000");
   await page.click("#del-place");
   expect(await page.$$eval("#places option", (o) => o.length)).toBe(1);
 
+  // units: metric switches list distances, labels and presets, and persists
+  await page.waitForSelector("#list tr");
+  expect(await page.textContent("#list tr td:last-child")).toEndWith(" nm");
+  await menu(page);
+  await page.click("#units");
+  expect(await page.getAttribute("#units", "class")).toBe("on");
+  await page.waitForFunction(() => document.querySelector("#list tr td:last-child")?.textContent?.endsWith(" km"));
+  expect(await page.textContent(".dist-unit")).toBe("KM");
+  expect(await page.$$eval("#range option", (o) => o.map((x) => x.textContent))).toEqual(["10", "25", "50", "100", "250", "450"]);
+  await page.reload();
+  expect(await page.getAttribute("#units", "class")).toBe("on");
+  await menu(page);
+  await page.click("#units");
+  expect(await page.textContent(".dist-unit")).toBe("NM");
+
   // filter: a type code from the current list keeps only that type, count shows shown/total
   await page.waitForSelector("#list tr");
   const listed = await page.$$eval("#list tr td:nth-child(2)", (tds) => tds.map((td) => td.textContent!));
@@ -201,6 +216,7 @@ await page.fill("#coords", "48.70000, 9.10000");
   expect(puts.at(-1)).toEqual({
     subscription: { endpoint: "https://fcm.googleapis.com/fcm/send/e2e", keys: { p256dh: "BNcRdreALRFXTkOOUHK1EtK2wtaz5Ry4YfYCA", auth: "tBHItJI5svbpez7KI4CCXg" } },
     alerts: [{ filter: "mil", lat: 48.78, lon: 9.18, radius: 10 }],
+    units: "imperial",
   });
   expect(await w.textContent("#alert-list li")).toContain("mil · 10 nm · 48.78, 9.18");
   await w.reload();

@@ -36,3 +36,21 @@ test("matcher", () => {
   expect(m("a33", { t: "A333" })).toBe(true);
   expect(globalTypes("beluga dlh a33 b748")).toEqual(["a3st", "a337", "a33", "b748"]); // a33: partial code, lookup returns nothing; dlh: no digit, no lookup
 });
+
+test("unit formatting", async () => {
+  const { altText, climbText, distText, speedText } = await import("./aircraft");
+  const a = (alt_baro: number | "ground") => ({ hex: "x", alt_baro });
+  expect(altText(a(3500))).toBe("3500 ft");
+  expect(altText(a(34000))).toBe("FL340");
+  expect(altText(a(3500), "metric")).toBe("1.07 km");
+  expect(altText(a(3000), "metric")).toBe("914 m");
+  expect(altText(a(3278), "metric")).toBe("999 m");
+  expect(altText(a(3280), "metric")).toBe("1.00 km"); // 999.7 m rounds to 1000: km
+  expect(altText(a("ground"), "metric")).toBe("GND");
+  expect(speedText(450, "metric")).toBe("833 km/h");
+  expect(speedText(450, "imperial")).toBe("450 kt");
+  expect(climbText(-1600, "metric")).toBe("-8.1 m/s");
+  expect(climbText(undefined, "metric")).toBe("-");
+  expect(distText(10, "metric")).toBe("18.5 km");
+  expect(distText(5.4, "imperial", 0)).toBe("5 nm");
+});

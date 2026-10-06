@@ -62,14 +62,15 @@
   <div id="status">locating…</div>
   <button id="menu-btn" popovertarget="menu" aria-label="settings">⋮</button>
   <div id="menu" popover>
-    <div>RANGE <select id="range"><option>10</option><option selected>25</option><option>50</option><option>100</option><option>250</option></select> NM</div>
+    <div>RANGE <select id="range"></select> <span class="dist-unit">NM</span></div>
     <div>MAP <select id="layer"><option value="">off</option><option value="dark">OSM dark</option><option value="osm">OSM</option></select></div>
+    <div>UNITS <button id="units" title="km, km/h, m, m/s instead of nm, kt, ft, ft/min">METRIC</button></div>
     <div>HDG <span id="hdg">000</span>° <button id="north" title="north up">N↑</button> <button id="lock" title="lock heading: dragging the radar no longer rotates it">LOCK</button> <button id="compass" hidden>COMPASS</button></div>
     <form id="loc">POS <input id="coords" placeholder="48.78, 9.18" size="18" aria-label="latitude, longitude"> <button>SET</button> <button type="button" id="gps">GPS</button></form>
     <div>FAV <select id="places" aria-label="saved positions"></select> <button id="save-place" title="save current position">+</button> <button id="del-place" title="remove selected position">−</button></div>
     <div title="push notification when a match comes within the radius of the current POS, also with the app closed">ALERTS</div>
     <ul id="alert-list"></ul>
-    <form id="alert-form"><input id="alert-filter" placeholder="mil, beluga… (empty: any)" size="16" aria-label="alert filter"> <select id="alert-radius" aria-label="alert radius"><option>5</option><option selected>10</option><option>25</option><option>50</option><option>100</option></select> NM <button title="add alert around the current position">+</button></form>
+    <form id="alert-form"><input id="alert-filter" placeholder="mil, beluga… (empty: any)" size="16" aria-label="alert filter"> <select id="alert-radius" aria-label="alert radius"></select> <span class="dist-unit">NM</span> <button title="add alert around the current position">+</button></form>
     <div id="alert-msg"></div>
   </div>
 </main>
