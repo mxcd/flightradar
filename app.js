@@ -1,4 +1,5 @@
-import { KM_PER_NM, altText, callsign, climbText, distText, globalTypes, matcher, speedText, toUnit } from "./aircraft.ts";
+import { KM_PER_NM, altText, callsign, classify, climbText, distText, globalTypes, matcher, speedText, toUnit } from "./aircraft.ts";
+import { SHAPES } from "./shapes.js";
 
 // no devtools on a phone: surface uncaught errors where they can be read
 addEventListener("error", (e) => { document.getElementById("status").textContent = `error: ${e.message} (${e.lineno}:${e.colno})`; });
@@ -25,6 +26,8 @@ let screenPos = [];       // [{ hex, x, y }] for click hit-testing
 let heading = Number(localStorage.heading) || 0; // compass direction at the top of the screen, degrees
 let compass = false;      // heading follows the device compass
 let units = "imperial";   // display only, see setUnits
+let icons = localStorage.icons === "1"; // silhouettes by class instead of dots
+const PATHS = Object.fromEntries(Object.entries(SHAPES).map(([k, s]) => [k, new Path2D(s.path)]));
 let locked = false;       // dragging does not rotate
 let drag = null;          // { x, y, angle, heading, moved } while a pointer is down
 const pointers = new Map(); // pointerId -> { x, y } for pinch
@@ -169,16 +172,31 @@ function draw(now) {
       const color = isEmergency(a) ? `rgba(255,77,77,${alpha})` : `rgba(77,255,136,${alpha})`;
       ctx.fillStyle = ctx.strokeStyle = color;
 
-      ctx.beginPath(); ctx.arc(x, y, a.hex === selected ? 5 : 3, 0, 2 * Math.PI); ctx.fill();
-      if (a.hex === selected) { ctx.beginPath(); ctx.arc(x, y, 10, 0, 2 * Math.PI); ctx.stroke(); }
+      let half = 3; // half the blip size: offsets the selection ring and the label
+      if (icons) {
+        const shape = classify(a);
+        half = SHAPES[shape].size / 2;
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate((a.track ?? 0) * Math.PI / 180 - rot); // without a track the nose points north
+        ctx.scale(SHAPES[shape].size / 64, SHAPES[shape].size / 64);
+        ctx.translate(-32, -32);
+        ctx.fill(PATHS[shape]);
+        ctx.restore();
+      } else {
+        ctx.beginPath(); ctx.arc(x, y, a.hex === selected ? 5 : 3, 0, 2 * Math.PI); ctx.fill();
+      }
+      if (a.hex === selected) { ctx.beginPath(); ctx.arc(x, y, half + 7, 0, 2 * Math.PI); ctx.stroke(); }
       if (a.gs && a.track != null) { // 1-minute velocity vector
         const len = a.gs / 60 * scale, trk = a.track * Math.PI / 180 - rot;
         ctx.beginPath(); ctx.moveTo(x, y);
         ctx.lineTo(x + len * Math.sin(trk), y - len * Math.cos(trk));
         ctx.stroke();
       }
-      ctx.fillText(callsign(a), x + 8, y - 2);
-      ctx.fillText(`${altText(a, units)} ${speedText(a.gs, units)}`, x + 8, y + 10);
+      ctx.fillText(callsign(a), x + half + 5, y - 2);
+      // compact on the scope: "4321m 666km/h", "FL340 485kt"
+      const compact = (text) => text.replaceAll(" ", "");
+      ctx.fillText(`${compact(altText(a, units))} ${compact(speedText(a.gs, units))}`, x + half + 5, y + 10);
     }
   }
 
@@ -336,7 +354,7 @@ function render() {
   if (!a) { $("detail").innerHTML = "<dt>-</dt><dd>click a target</dd>"; return; }
   const cs = (a.flight ?? "").trim();
   const fields = [
-    ["Callsign", callsign(a)], ["Route", cs ? "…" : "-"], ["Reg", a.r], ["Type", a.desc ?? a.t],
+    ["Callsign", callsign(a)], ["Route", cs ? "…" : "-"], ["Reg", a.r], ["Type", a.desc ?? a.t], ["Class", classify(a)],
     ["Hex", a.hex.toUpperCase()], ["Alt", altText(a, units)], ["V/S", climbText(a.baro_rate, units)],
     ["GS", speedText(a.gs, units)], ["Track", a.track != null ? `${Math.round(a.track)}°` : null],
     ["Squawk", a.squawk ? `${a.squawk}${EMERGENCY[a.squawk] ? " " + EMERGENCY[a.squawk] : ""}` : null],
@@ -447,6 +465,13 @@ function setUnits(value) {
   renderAlerts();
   render();
 }
+function setIcons(on) {
+  icons = on;
+  localStorage.icons = on ? "1" : "";
+  $("icons").classList.toggle("on", on);
+}
+setIcons(icons);
+$("icons").addEventListener("click", () => setIcons(!icons));
 $("units").addEventListener("click", () => {
   setUnits(units === "metric" ? "imperial" : "metric");
   resyncAlerts(); // notifications are worded by the server, in the device's units
@@ -560,6 +585,28 @@ $("alert-list").addEventListener("click", async (e) => {
 });
 
 navigator.serviceWorker?.register("/sw.js");
+
+// Updates: "/" is served no-cache and the service worker caches nothing, so a fresh start is always current.
+// An installed app left open (phones keep it for days) is not: compare the content-hashed bundle name in a
+// fresh "/" with our own and reload on a difference, when the app comes back and every few minutes.
+const UPDATE_CHECK_MS = 5 * 60_000;
+const scriptSrc = (root) => root.querySelector('script[type="module"][src]')?.getAttribute("src");
+const loadedScript = scriptSrc(document);
+async function reloadIfOutdated() {
+  if (!loadedScript || document.hidden) return;
+  let latest;
+  try {
+    const html = await (await fetch("/", { cache: "no-store" })).text();
+    latest = scriptSrc(new DOMParser().parseFromString(html, "text/html"));
+  } catch {
+    return; // offline or deploying: next check
+  }
+  // not in the middle of something: dragging, an open menu, typing
+  const busy = drag || pointers.size || $("menu").matches(":popover-open") || document.activeElement?.matches("input, select");
+  if (latest && latest !== loadedScript && !busy) location.reload();
+}
+document.addEventListener("visibilitychange", reloadIfOutdated);
+setInterval(reloadIfOutdated, UPDATE_CHECK_MS);
 // a tapped notification selects its aircraft (sw.js posts it to an open window, or opens /?select=)
 navigator.serviceWorker?.addEventListener("message", (e) => { if (e.data?.select) select(e.data.select); });
 // only once push is allowed: subscribing without a tap would prompt or fail

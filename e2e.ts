@@ -140,6 +140,18 @@ await page.fill("#coords", "48.70000, 9.10000");
   await page.click("#units");
   expect(await page.textContent(".dist-unit")).toBe("NM");
 
+  // icons: off by default, toggles on and persists; details show the class
+  expect(await page.getAttribute("#icons", "class")).toBeNull();
+  await menu(page);
+  await page.click("#icons");
+  await page.reload();
+  expect(await page.getAttribute("#icons", "class")).toBe("on");
+  await page.waitForSelector("#list tr");
+  await page.click("#list tr");
+  expect(await page.textContent("#detail")).toContain("Class");
+  await menu(page);
+  await page.click("#icons");
+
   // filter: a type code from the current list keeps only that type, count shows shown/total
   await page.waitForSelector("#list tr");
   const listed = await page.$$eval("#list tr td:nth-child(2)", (tds) => tds.map((td) => td.textContent!));
@@ -234,6 +246,27 @@ await page.fill("#coords", "48.70000, 9.10000");
     expect(res.status()).toBe(204);
   }
   await pwa.close();
+
+  // updates: a fresh "/" naming a different bundle (= new deploy) reloads the app when it comes back to the foreground
+  const u = await browser.newPage();
+  await u.goto(`${url}/?lat=48.78&lon=9.18`);
+  const current = await u.evaluate(() => document.querySelector('script[type="module"][src]')!.getAttribute("src"));
+  await u.evaluate(() => { (window as any).stillHere = true; });
+  await u.dispatchEvent("body", "click"); // nothing focused
+  await u.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await Bun.sleep(500);
+  expect(await u.evaluate(() => (window as any).stillHere)).toBe(true); // same version: no reload
+  const newDeploy = (u2: URL) => u2.pathname === "/";
+  await u.route(newDeploy, async (route) => {
+    if (route.request().resourceType() !== "fetch") return route.continue();
+    const html = await (await route.fetch()).text();
+    await route.fulfill({ body: html.replace(current!, "/chunk-newdeploy.js"), contentType: "text/html" });
+  });
+  const reloaded = u.waitForEvent("load");
+  await u.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await reloaded;
+  expect(await u.evaluate(() => (window as any).stillHere)).toBeUndefined();
+  await u.close();
 
   // mobile: compass button, device facing east -> heading 090
   const mobile = await browser.newContext({

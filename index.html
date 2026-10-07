@@ -65,6 +65,7 @@
     <div>RANGE <select id="range"></select> <span class="dist-unit">NM</span></div>
     <div>MAP <select id="layer"><option value="">off</option><option value="dark">OSM dark</option><option value="osm">OSM</option></select></div>
     <div>UNITS <button id="units" title="km, km/h, m, m/s instead of nm, kt, ft, ft/min">METRIC</button></div>
+    <div>TARGETS <button id="icons" title="aircraft silhouettes by type, pointing along the track, instead of dots">ICONS</button></div>
     <div>HDG <span id="hdg">000</span>° <button id="north" title="north up">N↑</button> <button id="lock" title="lock heading: dragging the radar no longer rotates it">LOCK</button> <button id="compass" hidden>COMPASS</button></div>
     <form id="loc">POS <input id="coords" placeholder="48.78, 9.18" size="18" aria-label="latitude, longitude"> <button>SET</button> <button type="button" id="gps">GPS</button></form>
     <div>FAV <select id="places" aria-label="saved positions"></select> <button id="save-place" title="save current position">+</button> <button id="del-place" title="remove selected position">−</button></div>
@@ -78,7 +79,7 @@
   <h2>SELECTED</h2>
   <dl id="detail"><dt>-</dt><dd>click a target</dd></dl>
   <h2>TARGETS <span id="count"></span></h2>
-  <input id="filter" placeholder="filter: beluga, mil, A388, DLH, D-AI…" aria-label="filter targets" title="space-separated, any term matches: callsign, registration, ICAO type code or description (partial ok), mil for military, or beluga / a380 / 747 / dreamliner / concorde. Full type codes (A337, B748) are also looked up worldwide.">
+  <input id="filter" placeholder="filter: beluga, mil, A388, DLH, D-AI…" aria-label="filter targets" title="space-separated, any term matches: callsign, registration, ICAO type code or description (partial ok), mil for military, a class (heavy, airliner, bizjet, fighter, turboprop, single, twin, heli, glider, balloon, drone, ground; jet, prop), or beluga / a380 / 747 / dreamliner / concorde. Full type codes (A337, B748) are also looked up worldwide.">
   <table><tbody id="list"></tbody></table>
 </aside>
 <script type="module" src="./app.js"></script>

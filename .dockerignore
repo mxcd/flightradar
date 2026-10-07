@@ -6,3 +6,4 @@ node_modules
 *.test.ts
 e2e.ts
 icon.svg
+scripts

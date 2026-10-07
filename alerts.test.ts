@@ -90,6 +90,6 @@ test("notifications use the device's units; databases from before units get impe
   await alerts.check(); // changed rule: first look again
   traffic = [{ hex: "ae0010", flight: "DUKE2", t: "BE20", lat: 48.8, lon: 9.2, dbFlags: 1, alt_baro: 3500 }];
   await alerts.check();
-  expect(bodies.at(-1)).toStartWith("DUKE2 within 10 km | mil · BE20 · 1.07 km · 2.7 km NE");
+  expect(bodies.at(-1)).toStartWith("DUKE2 within 10 km | mil · BE20 · 1067 m · 2.7 km NE");
   for (const suffix of ["", "-wal", "-shm"]) await Bun.file(path + suffix).delete().catch(() => {});
 });

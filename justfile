@@ -6,3 +6,6 @@ test:
 
 e2e:
     bun e2e.ts
+
+types:
+    bun scripts/update-types.ts

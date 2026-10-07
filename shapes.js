@@ -1,0 +1,58 @@
+// Aircraft silhouettes per class (see classify in aircraft.ts): SVG path data in a 64x64 box,
+// nose up, centred on (32, 32); size is the drawn width in px. Own drawings: tar1090's shapes are GPL.
+export const SHAPES = {
+  heavy: {
+    size: 34,
+    path: "M32 2C34.5 2 36 5 36 9L36 22L62 38L62 42L36 35L36 50L45 56L45 59L32 57L19 59L19 56L28 50L28 35L2 42L2 38L28 22L28 9C28 5 29.5 2 32 2Z"
+      + "M14 34h3v6h-3ZM23 30h3v6h-3ZM38 30h3v6h-3ZM47 34h3v6h-3Z",
+  },
+  airliner: {
+    size: 28,
+    path: "M32 4C34 4 35 7 35 10L35 24L60 38L60 41L35 35L35 50L43 56L43 59L32 57L21 59L21 56L29 50L29 35L4 41L4 38L29 24L29 10C29 7 30 4 32 4Z"
+      + "M17 32h3v6h-3ZM44 32h3v6h-3Z",
+  },
+  bizjet: {
+    size: 22,
+    path: "M32 6C33.5 6 34.5 9 34.5 12L34.5 28L54 40L54 42L34.5 36L34.5 50L43 54L43 56L32 55L21 56L21 54L29.5 50L29.5 36L10 42L10 40L29.5 28L29.5 12C29.5 9 30.5 6 32 6Z"
+      + "M25 40h3v7h-3ZM36 40h3v7h-3Z",
+  },
+  fighter: {
+    size: 22,
+    path: "M32 2L35 16L35 28L58 46L58 50L36 47L39 58L32 55L25 58L28 47L6 50L6 46L29 28L29 16Z",
+  },
+  turboprop: {
+    size: 24,
+    path: "M32 8C34 8 35 10 35 13L35 26L60 27L60 32L35 33L35 50L43 52L43 56L32 55L21 56L21 52L29 50L29 33L4 32L4 27L29 26L29 13C29 10 30 8 32 8Z"
+      + "M16 20h5v10h-5ZM43 20h5v10h-5ZM14 19h9v1.5h-9ZM41 19h9v1.5h-9Z",
+  },
+  single: {
+    size: 18,
+    path: "M32 13C33.5 13 34 15 34 17L34 25L56 26L56 31L34 31L33.5 46L40 48L40 51L32 50L24 51L24 48L30.5 46L30 31L8 31L8 26L30 25L30 17C30 15 30.5 13 32 13Z"
+      + "M26 11h12v2h-12Z",
+  },
+  twin: {
+    size: 20,
+    path: "M32 10C33.5 10 34 13 34 16L34 25L58 26L58 31L34 31L33.5 46L40 48L40 51L32 50L24 51L24 48L30.5 46L30 31L6 31L6 26L30 25L30 16C30 13 30.5 10 32 10Z"
+      + "M17 19h5v11h-5ZM42 19h5v11h-5ZM15 18h9v1.5h-9ZM40 18h9v1.5h-9Z",
+  },
+  heli: {
+    size: 22,
+    path: "M32 16C37 16 39 22 39 29C39 36 36 41 32 41C28 41 25 36 25 29C25 22 27 16 32 16Z"
+      + "M30.8 40h2.4v18h-2.4ZM27 55h10v2.5h-10Z"
+      + "M11.3 13.5l1.8-1.8l39.6 39.6l-1.8 1.8ZM50.9 11.7l1.8 1.8l-39.6 39.6l-1.8-1.8Z",
+  },
+  glider: {
+    size: 26,
+    path: "M32 14C33 14 33.5 16 33.5 18L33.5 27L63 28.5L63 30.5L33.5 31L33 50L38 51L38 53L26 53L26 51L31 50L30.5 31L1 30.5L1 28.5L30.5 27L30.5 18C30.5 16 31 14 32 14Z",
+  },
+  balloon: {
+    size: 16,
+    path: "M32 8A16 16 0 1 1 31.99 8ZM28 46h8v8h-8Z",
+  },
+  drone: {
+    size: 14,
+    path: "M28 28h8v8h-8ZM22 15A7 7 0 1 1 21.99 15ZM42 15A7 7 0 1 1 41.99 15ZM22 35A7 7 0 1 1 21.99 35ZM42 35A7 7 0 1 1 41.99 35Z",
+  },
+  ground: { size: 10, path: "M16 16h32v32h-32Z" },
+  unknown: { size: 16, path: "M32 10L48 52L32 42L16 52Z" },
+};

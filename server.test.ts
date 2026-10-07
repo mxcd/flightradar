@@ -42,10 +42,9 @@ test("unit formatting", async () => {
   const a = (alt_baro: number | "ground") => ({ hex: "x", alt_baro });
   expect(altText(a(3500))).toBe("3500 ft");
   expect(altText(a(34000))).toBe("FL340");
-  expect(altText(a(3500), "metric")).toBe("1.07 km");
+  expect(altText(a(3500), "metric")).toBe("1067 m");
   expect(altText(a(3000), "metric")).toBe("914 m");
-  expect(altText(a(3278), "metric")).toBe("999 m");
-  expect(altText(a(3280), "metric")).toBe("1.00 km"); // 999.7 m rounds to 1000: km
+  expect(altText(a(35000), "metric")).toBe("10668 m"); // never km
   expect(altText(a("ground"), "metric")).toBe("GND");
   expect(speedText(450, "metric")).toBe("833 km/h");
   expect(speedText(450, "imperial")).toBe("450 kt");
@@ -53,4 +52,30 @@ test("unit formatting", async () => {
   expect(climbText(undefined, "metric")).toBe("-");
   expect(distText(10, "metric")).toBe("18.5 km");
   expect(distText(5.4, "imperial", 0)).toBe("5 nm");
+});
+
+test("classify", async () => {
+  const { classify, matcher } = await import("./aircraft");
+  const c = (a: object) => classify({ hex: "x", ...a });
+  expect(c({ t: "A388" })).toBe("heavy");
+  expect(c({ t: "A3ST" })).toBe("heavy"); // beluga: L2J, wake H
+  expect(c({ t: "A320" })).toBe("airliner");
+  expect(c({ t: "E55P", category: "A2" })).toBe("bizjet");
+  expect(c({ t: "C25A" })).toBe("bizjet"); // wake L
+  expect(c({ t: "EUFI" })).toBe("fighter");
+  expect(c({ t: "A320", category: "A6" })).toBe("fighter");
+  expect(c({ t: "BE20" })).toBe("turboprop");
+  expect(c({ t: "V22" })).toBe("turboprop");
+  expect(c({ t: "C172" })).toBe("single");
+  expect(c({ t: "PA34" })).toBe("twin");
+  expect(c({ t: "EC35" })).toBe("heli");
+  expect(c({ t: "GLID" })).toBe("glider");
+  expect(c({ t: "BALL" })).toBe("balloon");
+  expect(c({ category: "C2" })).toBe("ground");
+  expect(c({ category: "A7" })).toBe("heli"); // no type: transponder category
+  expect(c({ category: "A5" })).toBe("heavy");
+  expect(c({})).toBe("unknown");
+  expect(matcher("heli")({ hex: "x", t: "EC35" })).toBe(true);
+  expect(matcher("jet")({ hex: "x", t: "C172" })).toBe(false);
+  expect(matcher("prop")({ hex: "x", t: "C172" })).toBe(true);
 });

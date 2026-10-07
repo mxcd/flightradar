@@ -52,8 +52,9 @@ if (import.meta.main) {
   alerts.start();
   const server = Bun.serve({
     port: Number(process.env.PORT ?? 3000),
-    // no HMR client or error overlay: it reaches phones through the tunnel and swaps code mid-session
-    development: false,
+    // dev: rebuilds the page on change, with HMR. Production (NODE_ENV in the Dockerfile): bundled once,
+    // no HMR client or error overlay, which reached phones via a tunnel and swapped code mid-session
+    development: process.env.NODE_ENV !== "production",
     routes: {
       "/": index,
       "/api/aircraft": aircraft,
